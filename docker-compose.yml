@@ -1,0 +1,11 @@
+version: '3.8'
+services:
+  node:
+    build: .
+    image: ondemand-boda-node
+    ports: ["3000:3000"]
+    volumes: [".:/app"]
+    command: node server.js
+  redis:
+    image: redis:alpine
+    ports: ["6379:6379"]
