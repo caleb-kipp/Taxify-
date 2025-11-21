@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>OnDemand Boda‑Taxi — Demo</title>
+  <style>
+    :root{--accent:#0ea5a4;--bg:#0f172a;--card:#0b1220}
+    html,body,#app{height:100%;margin:0;font-family:Inter,system-ui,Arial;color:#e6eef8;background:#0f172a}
+    header{padding:12px 16px;display:flex;align-items:center;gap:12px;background:linear-gradient(90deg,#07102433,transparent)}
+    header h1{font-size:18px;margin:0}
+    #app{display:grid;grid-template-columns:1fr 360px;gap:12px;padding:12px}
+    #map{height:calc(100vh - 60px);border-radius:12px;box-shadow:0 6px 20px rgba(2,6,23,.7)}
+    .panel{background:linear-gradient(180deg,#071024,#081022);padding:12px;border-radius:12px;color:#cfe8ff}
+    .card{background:linear-gradient(180deg,#061323,#081323);padding:12px;border-radius:10px;margin-bottom:12px}
+    .btn{background:var(--accent);padding:8px 12px;border-radius:8px;color:#042022;border:none;cursor:pointer}
+    .small{font-size:13px;color:#9fb5c6}
+    .driver-list{max-height:260px;overflow:auto}
+    .driver-item{display:flex;gap:10px;align-items:center;padding:8px;border-radius:8px;background:#061722;margin-bottom:8px}
+    .driver-item img{width:44px;height:44px;border-radius:50%}
+    .muted{color:#7ea0b4}
+    footer{padding:8px 16px;color:#9fb5c6}
+    input,select{padding:8px;border-radius:8px;border:1px solid #123}
+  </style>
+  <!-- Leaflet for open maps (no API key required) -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+</head>
+<body>
+  <header>
+    <h1>OnDemand Boda‑Taxi — Demo</h1>
+    <div class="small">Demo: live map, driver selection, estimates (mock fuel & terrain)</div>
+  </header>
+  <div id="app">
+    <div id="map" ></div>
+
+    <div class="panel">
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <div>
+            <div class="small">Pickup</div>
+            <input id="pickup" placeholder="Tap on map or enter address" />
+          </div>
+          <div>
+            <div class="small">Dropoff</div>
+            <input id="dropoff" placeholder="Tap on map or enter address" />
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <div>
+            <div class="small">Ride Type</div>
+            <select id="rideType"><option value="bike">Bike‑Taxi</option><option value="cargo">Cargo</option><option value="shared">Shared</option></select>
+          </div>
+          <div>
+            <div class="small">Payment</div>
+            <select id="payment"><option value="mpesa">M‑Pesa</option><option value="card">Card</option><option value="cash">Cash</option></select>
+          </div>
+        </div>
+        <div style="margin-top:10px;display:flex;gap:8px">
+          <button class="btn" id="estimateBtn">Estimate Fare</button>
+          <button class="btn" id="requestBtn">Request Driver</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <h3 style="margin:0">Nearby Drivers</h3>
+          <div class="small muted">Tap to view & select</div>
+        </div>
+        <div class="driver-list" id="driverList"></div>
+      </div>
+
+      <div class="card">
+        <h3 style="margin:0">Trip Estimate</h3>
+        <div id="estimateBox" class="small muted">No estimate yet.</div>
+      </div>
+
+      <div class="card">
+        <h3 style="margin:0">Live Chat (demo)</h3>
+        <div id="chatBox" style="height:140px;overflow:auto;background:#071622;padding:8px;border-radius:8px;margin-bottom:8px"></div>
+        <div style="display:flex;gap:8px"><input id="chatMsg" placeholder="Message driver or support"/><button class="btn" id="sendChat">Send</button></div>
+      </div>
+
+      <div class="card small muted">
+        <strong>Notes:</strong> Demo uses in‑browser mock server if backend not running. Fuel model uses fixed consumption + terrain factor.
+      </div>
+
+    </div>
+  </div>
+  <footer>© OnDemand Boda‑Taxi • Demo bundle</footer>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    /* ----------------------------- Configuration ------------------------------ */
+    const CONFIG = {
+      API_BASE: window.location.hostname === 'localhost' ? 'http://localhost:3000' : '',
+      MAPBOX_TOKEN: 'REPLACE_WITH_MAPBOX_TOKEN',
+      FUEL_PRICE_PER_LITER: 150, // KES example
+      BIKE_CONSUMPTION_L_PER_KM: 0.035, // 35 ml per km as example
+      DRIVER_BASE_PAY_PER_KM: 30, // pay driver per km
+      COMPANY_MARGIN_PERCENT: 0.15, // 15%
+      TERRAIN_FACTORS: {flat:1, hilly:1.12, rough:1.28}
+    };
+
+    /* ----------------------------- App State --------------------------------- */
+    const state = {
+      map: null,
+      pickup: null,
+      dropoff: null,
+      drivers: [],
+      selectedDriverId: null
+    };
+
+    /* ----------------------------- Initialize Map ---------------------------- */
+    const map = L.map('map', {zoomControl:true}).setView([0.0236, 37.9062], 13); // Kenya center
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19}).addTo(map);
+    state.map = map;
+
+    let pickupMarker, dropoffMarker;
+    map.on('click', function(e){
+      if(!pickupMarker){
+        pickupMarker = L.marker(e.latlng,{title:'Pickup'}).addTo(map);
+        document.getElementById('pickup').value = e.latlng.lat.toFixed(5)+', '+e.latlng.lng.toFixed(5);
+        state.pickup = e.latlng;
+      } else if(!dropoffMarker){
+        dropoffMarker = L.marker(e.latlng,{title:'Dropoff',icon:L.icon({iconUrl:'',iconSize:[25,41]})}).addTo(map);
+        document.getElementById('dropoff').value = e.latlng.lat.toFixed(5)+', '+e.latlng.lng.toFixed(5);
+        state.dropoff = e.latlng;
+      } else {
+        // Reset
+        map.removeLayer(pickupMarker); map.removeLayer(dropoffMarker);
+        pickupMarker = L.marker(e.latlng).addTo(map);
+        dropoffMarker = null;
+        document.getElementById('pickup').value = e.latlng.lat.toFixed(5)+', '+e.latlng.lng.toFixed(5);
+        document.getElementById('dropoff').value = '';
+        state.pickup = e.latlng; state.dropoff = null;
+      }
+    });
+
+    /* ----------------------------- Mock Drivers ------------------------------ */
+    function seedDrivers(){
+      // Create 6 mock drivers around center
+      const center = [0.0236,37.9062];
+      const drivers = [];
+      for(let i=0;i<6;i++){
+        const lat = center[0] + (Math.random()-0.5)/100;
+        const lng = center[1] + (Math.random()-0.5)/100;
+        drivers.push({id:'D'+(100+i),name:['John','Aisha','Peter','Grace','Sam','Faith'][i],rating:(4+Math.random()).toFixed(2),lat, lng, vehicle:'Boda',acceptance:80+Math.floor(Math.random()*20) });
+      }
+      state.drivers = drivers;
+      renderDrivers();
+    }
+
+    function renderDrivers(){
+      const container = document.getElementById('driverList'); container.innerHTML='';
+      state.drivers.forEach(d=>{
+        const el = document.createElement('div'); el.className='driver-item';
+        el.innerHTML = `<img src="https://api.dicebear.com/6.x/miniavs/svg?seed=${encodeURIComponent(d.name)}" />
+          <div style="flex:1"><strong>${d.name}</strong><div class=\"small muted\">${d.vehicle} • ${d.rating}★ • ${d.acceptance}%</div></div>
+          <div><button class=\"btn\" data-id=\"${d.id}\">Select</button></div>`;
+        container.appendChild(el);
+        el.querySelector('button').onclick = ()=>selectDriver(d.id);
+      });
+
+      // place driver markers
+      state.drivers.forEach(d=>{
+        if(d.marker) map.removeLayer(d.marker);
+        d.marker = L.circleMarker([d.lat,d.lng],{radius:8,fillColor:'#0ea5a4',color:'#042022'}).addTo(map).bindTooltip(`${d.name} (${d.rating}★)`);
+      });
+    }
+
+    function selectDriver(id){
+      state.selectedDriverId = id;
+      const d = state.drivers.find(x=>x.id===id);
+      alert('Selected driver: '+d.name+' • Contact: +2547XXXXXXX');
+    }
+
+    /* ----------------------------- Estimate Fare ----------------------------- */
+    function haversine(a,b){
+      const R=6371; const dLat=(b.lat-a.lat)*Math.PI/180; const dLon=(b.lng-a.lng)*Math.PI/180;
+      const lat1=a.lat*Math.PI/180, lat2=b.lat*Math.PI/180;
+      const s=Math.sin(dLat/2)*Math.sin(dLat/2)+Math.cos(lat1)*Math.cos(lat2)*Math.sin(dLon/2)*Math.sin(dLon/2);
+      const c=2*Math.atan2(Math.sqrt(s),Math.sqrt(1-s)); return R*c; // km
+    }
+
+    function estimateTrip(){
+      if(!state.pickup || !state.dropoff) return alert('Select pickup and dropoff on map');
+      const km = haversine(state.pickup,state.dropoff);
+      const terrain='flat'; // could be user input
+      const terrainFactor = CONFIG.TERRAIN_FACTORS[terrain] || 1;
+      const consumption = CONFIG.BIKE_CONSUMPTION_L_PER_KM * km * terrainFactor; // liters
+      const fuelCost = consumption * CONFIG.FUEL_PRICE_PER_LITER;
+      const driverPay = CONFIG.DRIVER_BASE_PAY_PER_KM * km;
+      const baseFare = 50; // flat base
+      const companyProfit = (baseFare + driverPay + fuelCost) * CONFIG.COMPANY_MARGIN_PERCENT;
+      const total = (baseFare + driverPay + fuelCost + companyProfit).toFixed(2);
+      const breakdown = {
+        distance_km: km.toFixed(2), consumption_l: consumption.toFixed(3), fuelCost: fuelCost.toFixed(2), driverPay: driverPay.toFixed(2), companyProfit: companyProfit.toFixed(2), total
+      };
+      document.getElementById('estimateBox').innerHTML = `Distance: ${breakdown.distance_km} km<br/>Fuel: KES ${breakdown.fuelCost} ( ${breakdown.consumption_l} L )<br/>Driver pay: KES ${breakdown.driverPay}<br/>Company: KES ${breakdown.companyProfit}<br/><strong>Total est: KES ${breakdown.total}</strong>`;
+      return breakdown;
+    }
+
+    document.getElementById('estimateBtn').onclick = estimateTrip;
+    document.getElementById('requestBtn').onclick = ()=>{
+      const est = estimateTrip(); if(!est) return; // already validated
+      if(!state.selectedDriverId) return alert('Select a driver from the list or wait for auto assign.');
+      const driver = state.drivers.find(d=>d.id===state.selectedDriverId);
+      alert('Requesting '+driver.name+'... (demo)');
+      pushChat(`System: Ride requested. Driver ${driver.name} will contact you.`);
+    }
+
+    /* ----------------------------- Chat (demo) ------------------------------- */
+    function pushChat(msg){
+      const box = document.getElementById('chatBox'); const p=document.createElement('div'); p.innerText=msg; box.appendChild(p); box.scrollTop=box.scrollHeight;
+    }
+    document.getElementById('sendChat').onclick = ()=>{ const t=document.getElementById('chatMsg'); if(!t.value) return; pushChat('You: '+t.value); t.value=''; }
+
+    /* ----------------------------- Init ------------------------------------- */
+    seedDrivers();
+    pushChat('Welcome to the demo chat. Use Request Driver to simulate flow.');
+  </script>
+</body>
+</html>
