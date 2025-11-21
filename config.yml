@@ -1,0 +1,13 @@
+env: development
+mapbox:
+  access_token: 'MAPBOX_ACCESS_TOKEN'
+payment:
+  mpesa:
+    consumer_key: 'MPESA_CONSUMER_KEY'
+    consumer_secret: 'MPESA_SECRET'
+  stripe:
+    secret_key: 'STRIPE_SECRET'
+  fallback_gateway: 'stripe'
+app:
+  default_currency: 'KES'
+  region: 'KE'
